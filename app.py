@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 
 # ======================= CONFIG =======================
-TOKEN = os.environ.get("TELEGRAM_TOKEN", "8667844263:AAHCq3-svZqpSwiuUnA-nJ6In1RCpzGz6T4")
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "9238378464:AAGcNR6KjMOvzXh_ZmGxS8Mq7ILcivBN24A")
 EXCEL_PATH = "Мониторинг.xlsx"
 SHEET_NAME = "мониторинг"
 
@@ -21,12 +21,12 @@ SHEET_NAME = "мониторинг"
 USERS = {
     "Малиновский Д.С.": 8893744433,
     "Шейко А.Г.": 8923409204,
-    "Хахалина А.С.": 8744295897,
     "Маскаленчик А.Э.": 731881402,
+    "Хахалина А.С.": 8744295897, # Ваш ID для теста
 }
 
 CHIEF_ID = 8656941302  # ID начальника
-MY_ID = 8744295897     # ВАШ ID
+MY_ID = 8744295897    # ВАШ ID
 # ======================================================
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -69,7 +69,7 @@ def update_excel_status(row_num, new_status):
         log.error(f"Ошибка записи в Excel: {e}")
         return False
 
-# ---------- Форматирование сообщения (КАК НА СКРИНШОТЕ) ----------
+# ---------- Форматирование сообщения ----------
 def format_task(t):
     return (
         f"🔔 *Напоминание о задаче!*\n\n"
@@ -156,32 +156,48 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     row_num = pending['row']
     action_type = pending['action']
 
+    # Определяем статус для сообщения и для Excel
     if action_type == "done":
         new_status = "Завершено"
-        btn_text = "✅ СУПЕР!"
+        display_status = "✅ Выполнено"
     else:
         new_status = "В процессе (Продлено)"
-        btn_text = "⏳ Это печально"
+        display_status = "⏳ Продлен срок"
 
-    success = update_excel_status(row_num, new_status)
-    status_msg = "✅ Статус в Excel обновлен." if success else "⚠️ Ошибка записи в Excel."
+    # Обновляем статус в Excel
+    update_excel_status(row_num, new_status)
+    
+    # Читаем задачи, чтобы найти реальное имя исполнителя и проект из таблицы
+    tasks = read_tasks()
+    task_info = next((t for t in tasks if t['row'] == row_num), None)
+    
+    if task_info:
+        real_assignee = task_info['assignee']
+        project_name = task_info['project']
+    else:
+        real_assignee = "—"
+        project_name = "—"
 
+    # Формируем отчет
     report = (
-        f"🔔 *Отчет по задаче (строка {row_num})*\n"
-        f"👤 *Исполнитель:* {pending['user']}\n"
-        f"📌 *Действие:* {btn_text}\n"
-        f"📊 *Новый статус:* {new_status}\n"
-        f"💬 *Комментарий:* {comment_text}\n"
-        f"{status_msg}"
+        f"🔔 *Отчёт по задаче*\n\n"
+        f"📁 *Проект:* {project_name}\n"
+        f"👤 *Исполнитель:* {real_assignee}\n"
+        f"📊 *Статус:* {display_status}\n"
+        f"💬 *Комментарий:* {comment_text}"
     )
 
+    # Отправляем отчет вам и начальнику
     for admin_id in [MY_ID, CHIEF_ID]:
         try:
             await context.bot.send_message(chat_id=admin_id, text=report, parse_mode="Markdown")
         except Exception as e:
             log.warning(f"Не удалось отправить отчет {admin_id}: {e}")
 
+    # Подтверждаем исполнителю
     await update.message.reply_text("Спасибо! Ваш комментарий и статус отправлены руководству.")
+    
+    # Очищаем состояние
     context.user_data.pop('pending_action', None)
 
 # ---------- Служебные команды ----------
