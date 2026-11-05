@@ -22,11 +22,11 @@ USERS = {
     "Малиновский Д.С.": 8893744433,
     "Шейко А.Г.": 8923409204,
     "Маскаленчик А.Э.": 731881402,
-    "Хахалина А.С.": 8744295897, # Ваш ID для теста
+    "Хахалина А.С.": 8744295897, # Ваш ID
 }
 
-CHIEF_ID = 8656941302  # ID начальника
-MY_ID = 8744295897    # ВАШ ID
+CHIEF_ID = 8656941302  # ЗАМЕНИТЕ НА ID НАЧАЛЬНИКА
+MY_ID = 8744295897     # ВАШ ID
 # ======================================================
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -91,8 +91,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(EXCEL_PATH)
     await update.message.reply_text("✅ Файл обновлён! Теперь напишите /tasks, чтобы разослать задачи.")
 
-# ---------- Рассылка задач ----------
+# ---------- Рассылка задач (только вы) ----------
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверка: только ваш ID имеет право на рассылку
+    if update.effective_user.id != MY_ID:
+        await update.message.reply_text("⛔ У вас нет прав на рассылку задач.")
+        return
+
     tasks = read_tasks()
     if not tasks:
         await update.message.reply_text("Нет данных. Сначала отправьте файл Excel.")
@@ -116,6 +121,42 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.warning(f"Не отправлено {t['assignee']}: {e}")
             
     await update.message.reply_text(f"Отправлено задач: {sent}")
+
+# ---------- Сводка для начальника (тоже запускаете только вы) ----------
+async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Проверка: только ваш ID
+    if update.effective_user.id != MY_ID:
+        await update.message.reply_text("⛔ У вас нет прав на просмотр сводки.")
+        return
+
+    tasks = read_tasks()
+    if not tasks:
+        await update.message.reply_text("Нет данных. Сначала отправьте файл Excel.")
+        return
+
+    header = f"📋 *Сводка по всем задачам* ({len(tasks)} шт.)\n\n"
+    blocks = []
+    for i, t in enumerate(tasks, 1):
+        block = (
+            f"{i}. *{t['project']}*\n"
+            f"   👤 {t['assignee']}\n"
+            f"   📋 {t['task']}\n"
+            f"   📅 Срок: {t['deadline']}\n"
+            f"   📊 Статус: {t['status']}\n\n"
+        )
+        blocks.append(block)
+
+    current_message = header
+    for block in blocks:
+        if len(current_message) + len(block) > 4000:
+            await context.bot.send_message(chat_id=CHIEF_ID, text=current_message, parse_mode="Markdown")
+            current_message = ""
+        current_message += block
+
+    if current_message.strip():
+        await context.bot.send_message(chat_id=CHIEF_ID, text=current_message, parse_mode="Markdown")
+
+    await update.message.reply_text("✅ Сводка отправлена начальнику.")
 
 # ---------- Обработка нажатий на кнопки ----------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -156,7 +197,6 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     row_num = pending['row']
     action_type = pending['action']
 
-    # Определяем статус для сообщения и для Excel
     if action_type == "done":
         new_status = "Завершено"
         display_status = "✅ Выполнено"
@@ -164,10 +204,8 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_status = "В процессе (Продлено)"
         display_status = "⏳ Продлен срок"
 
-    # Обновляем статус в Excel
     update_excel_status(row_num, new_status)
     
-    # Читаем задачи, чтобы найти реальное имя исполнителя и проект из таблицы
     tasks = read_tasks()
     task_info = next((t for t in tasks if t['row'] == row_num), None)
     
@@ -178,7 +216,6 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         real_assignee = "—"
         project_name = "—"
 
-    # Формируем отчет
     report = (
         f"🔔 *Отчёт по задаче*\n\n"
         f"📁 *Проект:* {project_name}\n"
@@ -187,17 +224,13 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💬 *Комментарий:* {comment_text}"
     )
 
-    # Отправляем отчет вам и начальнику
     for admin_id in [MY_ID, CHIEF_ID]:
         try:
             await context.bot.send_message(chat_id=admin_id, text=report, parse_mode="Markdown")
         except Exception as e:
             log.warning(f"Не удалось отправить отчет {admin_id}: {e}")
 
-    # Подтверждаем исполнителю
     await update.message.reply_text("Спасибо! Ваш комментарий и статус отправлены руководству.")
-    
-    # Очищаем состояние
     context.user_data.pop('pending_action', None)
 
 # ---------- Служебные команды ----------
@@ -226,6 +259,7 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("tasks", cmd_tasks))
+    app.add_handler(CommandHandler("all", cmd_all))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_comment))
