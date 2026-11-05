@@ -69,7 +69,7 @@ def update_excel_status(row_num, new_status):
         log.error(f"Ошибка записи в Excel: {e}")
         return False
 
-# ---------- Форматирование сообщения ----------
+# ---------- Форматирование сообщения с задачей ----------
 def format_task(t):
     return (
         f"🔔 *Напоминание о задаче!*\n\n"
@@ -93,7 +93,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- Рассылка задач (только вы) ----------
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Проверка: только ваш ID имеет право на рассылку
     if update.effective_user.id != MY_ID:
         await update.message.reply_text("⛔ У вас нет прав на рассылку задач.")
         return
@@ -122,9 +121,8 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     await update.message.reply_text(f"Отправлено задач: {sent}")
 
-# ---------- Сводка для начальника (тоже запускаете только вы) ----------
+# ---------- Сводка для начальника (тоже только вы) ----------
 async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Проверка: только ваш ID
     if update.effective_user.id != MY_ID:
         await update.message.reply_text("⛔ У вас нет прав на просмотр сводки.")
         return
@@ -187,7 +185,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ---------- Обработка текста (комментария) ----------
+# ---------- Обработка текста (комментария) и ОТЧЕТ ----------
 async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending = context.user_data.get('pending_action')
     if not pending:
@@ -212,13 +210,17 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if task_info:
         real_assignee = task_info['assignee']
         project_name = task_info['project']
+        task_name = task_info['task']  # <-- ДОБАВИЛИ САМУ ЗАДАЧУ
     else:
         real_assignee = "—"
         project_name = "—"
+        task_name = "—"
 
+    # ОТЧЕТ (ДОБАВЛЕНА СТРОКА С ЗАДАЧЕЙ)
     report = (
         f"🔔 *Отчёт по задаче*\n\n"
         f"📁 *Проект:* {project_name}\n"
+        f"📋 *Задача:* {task_name}\n"
         f"👤 *Исполнитель:* {real_assignee}\n"
         f"📊 *Статус:* {display_status}\n"
         f"💬 *Комментарий:* {comment_text}"
