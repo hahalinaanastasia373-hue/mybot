@@ -23,6 +23,7 @@ USERS = {
     "Шейко А.Г.": 8923409204,
     "Маскаленчик А.Э.": 731881402,
     "Хахалина А.С.": 8744295897, # Ваш ID
+
 }
 
 CHIEF_ID = 8656941302  # ЗАМЕНИТЕ НА ID НАЧАЛЬНИКА
@@ -41,30 +42,44 @@ def read_tasks():
     tasks = []
     for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         if len(row) < 11: continue
+        
         project_raw, task_text, deadline, assignee, status = row[0], row[3], row[5], row[8], row[10]
         if not project_raw or not task_text: continue
 
         project = re.sub(r"\.xlsx$", "", str(project_raw)).strip()
+        task_clean = str(task_text).strip()
+        
+        # Формируем уникальный ключ: Проект + Текст задачи
+        task_key = f"{project}||{task_clean}"
+        
         deadline_str = deadline.strftime("%d.%m.%Y") if isinstance(deadline, datetime) else str(deadline)
         
         tasks.append({
             "row": idx,
+            "key": task_key,  # <-- УНИКАЛЬНЫЙ КЛЮЧ
             "project": project,
-            "task": str(task_text).strip(),
+            "task": task_clean,
             "deadline": deadline_str,
             "assignee": str(assignee).strip() if assignee else "",
             "status": str(status).strip() if status else "",
         })
     return tasks
 
-# ---------- Обновление статуса в Excel ----------
-def update_excel_status(row_num, new_status):
+# ---------- Обновление статуса в Excel (по ключу) ----------
+def update_excel_status_by_key(task_key, new_status):
     try:
         wb = openpyxl.load_workbook(EXCEL_PATH)
         ws = wb[SHEET_NAME]
-        ws.cell(row=row_num, column=11).value = new_status
-        wb.save(EXCEL_PATH)
-        return True
+        for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            if len(row) > 3 and row[0] and row[3]:
+                proj = re.sub(r"\.xlsx$", "", str(row[0])).strip()
+                tsk = str(row[3]).strip()
+                current_key = f"{proj}||{tsk}"
+                if current_key == task_key:
+                    ws.cell(row=idx, column=11).value = new_status
+                    wb.save(EXCEL_PATH)
+                    return True
+        return False
     except Exception as e:
         log.error(f"Ошибка записи в Excel: {e}")
         return False
@@ -106,9 +121,20 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = USERS.get(t["assignee"])
         if not uid: continue
         
+        # В callback_data передаем уникальный ключ (Проект+Задача)
+        # Из-за ограничения Telegram (64 байта) мы хешируем его в короткий ID через встроенный hash
+        # Но для простоты используем сам ключ (если он длинный, Telegram может обрезать, поэтому используем короткий индекс)
+        
+        # Чтобы избежать проблем с 64-байтным лимитом, используем порядковый номер в списке.
+        # Но чтобы он не сбивался, мы будем искать по ключу в памяти.
+        # Для надежности лучше передавать просто индекс в списке tasks.
+        
+        # ВАРИАНТ 2: Передаем индекс в списке (он уникален для этого запуска)
+        task_index = tasks.index(t)
+        
         keyboard = [[
-            InlineKeyboardButton("✅ Выполнено", callback_data=f"done_{t['row']}"),
-            InlineKeyboardButton("⏳ Продлить", callback_data=f"extend_{t['row']}")
+            InlineKeyboardButton("✅ Выполнено", callback_data=f"done_{task_index}"),
+            InlineKeyboardButton("⏳ Продлить", callback_data=f"extend_{task_index}")
         ]]
         try:
             await context.bot.send_message(
@@ -119,9 +145,11 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.warning(f"Не отправлено {t['assignee']}: {e}")
             
+    # Сохраняем текущий список задач в память бота для дальнейшего поиска
+    context.bot_data['tasks'] = tasks
     await update.message.reply_text(f"Отправлено задач: {sent}")
 
-# ---------- Сводка для начальника (тоже только вы) ----------
+# ---------- Сводка для начальника ----------
 async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != MY_ID:
         await update.message.reply_text("⛔ У вас нет прав на просмотр сводки.")
@@ -161,8 +189,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    action, row_str = query.data.split('_')
-    row_num = int(row_str)
+    # Получаем действие и ИНДЕКС задачи из памяти
+    action, task_index_str = query.data.split('_', 1) 
+    task_index = int(task_index_str)
+    
+    # Достаем сохраненный список задач
+    tasks = context.bot_data.get('tasks', [])
+    if not tasks or task_index >= len(tasks):
+        await query.message.reply_text("⚠️ Ошибка: задача не найдена. Пожалуйста, отправьте файл и сделайте рассылку заново.")
+        return
+
+    # Берем нужную задачу по индексу
+    current_task = tasks[task_index]
 
     if action == "done":
         new_text = "✅ СУПЕР!"
@@ -174,9 +212,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(new_text, callback_data="ignore")]])
     await query.edit_message_reply_markup(reply_markup=new_keyboard)
 
+    # Сохраняем в память ключ задачи
     context.user_data['pending_action'] = {
         'action': action_type,
-        'row': row_num,
+        'key': current_task['key'],  # <-- СОХРАНЯЕМ УНИКАЛЬНЫЙ КЛЮЧ
         'user': query.from_user.username or query.from_user.first_name
     }
     
@@ -192,7 +231,7 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     comment_text = update.message.text
-    row_num = pending['row']
+    task_key = pending['key']
     action_type = pending['action']
 
     if action_type == "done":
@@ -202,21 +241,22 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_status = "В процессе (Продлено)"
         display_status = "⏳ Продлен срок"
 
-    update_excel_status(row_num, new_status)
+    # Обновляем статус по уникальному ключу
+    update_excel_status_by_key(task_key, new_status)
     
+    # Ищем задачу по ключу для отчета
     tasks = read_tasks()
-    task_info = next((t for t in tasks if t['row'] == row_num), None)
+    task_info = next((t for t in tasks if t['key'] == task_key), None)
     
     if task_info:
         real_assignee = task_info['assignee']
         project_name = task_info['project']
-        task_name = task_info['task']  # <-- ДОБАВИЛИ САМУ ЗАДАЧУ
+        task_name = task_info['task']
     else:
         real_assignee = "—"
         project_name = "—"
         task_name = "—"
 
-    # ОТЧЕТ (ДОБАВЛЕНА СТРОКА С ЗАДАЧЕЙ)
     report = (
         f"🔔 *Отчёт по задаче*\n\n"
         f"📁 *Проект:* {project_name}\n"
