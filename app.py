@@ -44,7 +44,8 @@ def read_tasks():
         if len(row) < 11: continue
         
         project_raw = row[0]
-        department = str(row[1]).strip() if row[1] else "Без отдела" # Столбец B
+        # ИСПРАВЛЕНИЕ: Отдел находится в 3-м столбце (индекс 2)
+        department = str(row[2]).strip() if row[2] else "Без отдела" 
         task_text = row[3]
         deadline = row[5]
         assignee = row[8]
@@ -55,14 +56,13 @@ def read_tasks():
         project = re.sub(r"\.xlsx$", "", str(project_raw)).strip()
         task_clean = str(task_text).strip()
         
-        # Уникальный ключ
         task_key = f"{project}||{task_clean}"
         deadline_str = deadline.strftime("%d.%m.%Y") if isinstance(deadline, datetime) else str(deadline)
         
         tasks.append({
             "row": idx,
             "key": task_key,
-            "department": department, # <-- ДОБАВИЛИ ОТДЕЛ
+            "department": department, # Теперь тут ОПР, ОКСП и т.д.
             "project": project,
             "task": task_clean,
             "deadline": deadline_str,
@@ -145,7 +145,7 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data['tasks'] = tasks
     await update.message.reply_text(f"Отправлено задач: {sent}")
 
-# ---------- Сводка для начальника (С ГРУППИРОВКОЙ ПО ОТДЕЛАМ) ----------
+# ---------- Сводка для начальника (ГРУППИРОВКА ПО ОТДЕЛАМ) ----------
 async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != MY_ID:
         await update.message.reply_text("⛔ У вас нет прав на просмотр сводки.")
@@ -156,7 +156,6 @@ async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нет данных. Сначала отправьте файл Excel.")
         return
 
-    # Группируем задачи по отделам
     grouped_by_dept = {}
     for t in tasks:
         dept = t['department']
@@ -164,12 +163,10 @@ async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
             grouped_by_dept[dept] = []
         grouped_by_dept[dept].append(t)
 
-    # Формируем сообщение
     header = f"📋 *Сводка по всем задачам* (Всего: {len(tasks)} шт.)\n\n"
     blocks = []
     
     for dept, dept_tasks in grouped_by_dept.items():
-        # Заголовок отдела
         dept_block = f"🏢 *Отдел: {dept}* ({len(dept_tasks)} задач)\n"
         dept_block += "➖➖➖➖➖➖➖➖➖➖\n"
         
@@ -183,7 +180,6 @@ async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         blocks.append(dept_block)
 
-    # Отправляем частями, чтобы не превысить лимит
     current_message = header
     for block in blocks:
         if len(current_message) + len(block) > 4000:
