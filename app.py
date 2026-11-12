@@ -43,20 +43,26 @@ def read_tasks():
     for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         if len(row) < 11: continue
         
-        project_raw, task_text, deadline, assignee, status = row[0], row[3], row[5], row[8], row[10]
+        project_raw = row[0]
+        department = str(row[1]).strip() if row[1] else "Без отдела" # Столбец B
+        task_text = row[3]
+        deadline = row[5]
+        assignee = row[8]
+        status = row[10]
+        
         if not project_raw or not task_text: continue
 
         project = re.sub(r"\.xlsx$", "", str(project_raw)).strip()
         task_clean = str(task_text).strip()
         
-        # Формируем уникальный ключ: Проект + Текст задачи
+        # Уникальный ключ
         task_key = f"{project}||{task_clean}"
-        
         deadline_str = deadline.strftime("%d.%m.%Y") if isinstance(deadline, datetime) else str(deadline)
         
         tasks.append({
             "row": idx,
-            "key": task_key,  # <-- УНИКАЛЬНЫЙ КЛЮЧ
+            "key": task_key,
+            "department": department, # <-- ДОБАВИЛИ ОТДЕЛ
             "project": project,
             "task": task_clean,
             "deadline": deadline_str,
@@ -121,15 +127,6 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = USERS.get(t["assignee"])
         if not uid: continue
         
-        # В callback_data передаем уникальный ключ (Проект+Задача)
-        # Из-за ограничения Telegram (64 байта) мы хешируем его в короткий ID через встроенный hash
-        # Но для простоты используем сам ключ (если он длинный, Telegram может обрезать, поэтому используем короткий индекс)
-        
-        # Чтобы избежать проблем с 64-байтным лимитом, используем порядковый номер в списке.
-        # Но чтобы он не сбивался, мы будем искать по ключу в памяти.
-        # Для надежности лучше передавать просто индекс в списке tasks.
-        
-        # ВАРИАНТ 2: Передаем индекс в списке (он уникален для этого запуска)
         task_index = tasks.index(t)
         
         keyboard = [[
@@ -145,11 +142,10 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.warning(f"Не отправлено {t['assignee']}: {e}")
             
-    # Сохраняем текущий список задач в память бота для дальнейшего поиска
     context.bot_data['tasks'] = tasks
     await update.message.reply_text(f"Отправлено задач: {sent}")
 
-# ---------- Сводка для начальника ----------
+# ---------- Сводка для начальника (С ГРУППИРОВКОЙ ПО ОТДЕЛАМ) ----------
 async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != MY_ID:
         await update.message.reply_text("⛔ У вас нет прав на просмотр сводки.")
@@ -160,18 +156,34 @@ async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нет данных. Сначала отправьте файл Excel.")
         return
 
-    header = f"📋 *Сводка по всем задачам* ({len(tasks)} шт.)\n\n"
-    blocks = []
-    for i, t in enumerate(tasks, 1):
-        block = (
-            f"{i}. *{t['project']}*\n"
-            f"   👤 {t['assignee']}\n"
-            f"   📋 {t['task']}\n"
-            f"   📅 Срок: {t['deadline']}\n"
-            f"   📊 Статус: {t['status']}\n\n"
-        )
-        blocks.append(block)
+    # Группируем задачи по отделам
+    grouped_by_dept = {}
+    for t in tasks:
+        dept = t['department']
+        if dept not in grouped_by_dept:
+            grouped_by_dept[dept] = []
+        grouped_by_dept[dept].append(t)
 
+    # Формируем сообщение
+    header = f"📋 *Сводка по всем задачам* (Всего: {len(tasks)} шт.)\n\n"
+    blocks = []
+    
+    for dept, dept_tasks in grouped_by_dept.items():
+        # Заголовок отдела
+        dept_block = f"🏢 *Отдел: {dept}* ({len(dept_tasks)} задач)\n"
+        dept_block += "➖➖➖➖➖➖➖➖➖➖\n"
+        
+        for i, t in enumerate(dept_tasks, 1):
+            dept_block += (
+                f"{i}. *{t['project']}*\n"
+                f"   👤 {t['assignee']}\n"
+                f"   📋 {t['task']}\n"
+                f"   📅 Срок: {t['deadline']}\n"
+                f"   📊 Статус: {t['status']}\n\n"
+            )
+        blocks.append(dept_block)
+
+    # Отправляем частями, чтобы не превысить лимит
     current_message = header
     for block in blocks:
         if len(current_message) + len(block) > 4000:
@@ -182,24 +194,21 @@ async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if current_message.strip():
         await context.bot.send_message(chat_id=CHIEF_ID, text=current_message, parse_mode="Markdown")
 
-    await update.message.reply_text("✅ Сводка отправлена начальнику.")
+    await update.message.reply_text("✅ Сводка отправлена начальнику (сгруппирована по отделам).")
 
 # ---------- Обработка нажатий на кнопки ----------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    # Получаем действие и ИНДЕКС задачи из памяти
     action, task_index_str = query.data.split('_', 1) 
     task_index = int(task_index_str)
     
-    # Достаем сохраненный список задач
     tasks = context.bot_data.get('tasks', [])
     if not tasks or task_index >= len(tasks):
         await query.message.reply_text("⚠️ Ошибка: задача не найдена. Пожалуйста, отправьте файл и сделайте рассылку заново.")
         return
 
-    # Берем нужную задачу по индексу
     current_task = tasks[task_index]
 
     if action == "done":
@@ -212,10 +221,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(new_text, callback_data="ignore")]])
     await query.edit_message_reply_markup(reply_markup=new_keyboard)
 
-    # Сохраняем в память ключ задачи
     context.user_data['pending_action'] = {
         'action': action_type,
-        'key': current_task['key'],  # <-- СОХРАНЯЕМ УНИКАЛЬНЫЙ КЛЮЧ
+        'key': current_task['key'],
         'user': query.from_user.username or query.from_user.first_name
     }
     
@@ -241,10 +249,8 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_status = "В процессе (Продлено)"
         display_status = "⏳ Продлен срок"
 
-    # Обновляем статус по уникальному ключу
     update_excel_status_by_key(task_key, new_status)
     
-    # Ищем задачу по ключу для отчета
     tasks = read_tasks()
     task_info = next((t for t in tasks if t['key'] == task_key), None)
     
